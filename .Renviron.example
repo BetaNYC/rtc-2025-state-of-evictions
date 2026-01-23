@@ -1,0 +1,5 @@
+PG_DBNAME=your_database_name
+PG_HOST=your-host.example.com
+PG_PORT=5432
+PG_USER=your_username
+PG_PASSWORD=your_password

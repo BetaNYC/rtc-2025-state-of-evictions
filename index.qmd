@@ -1,0 +1,375 @@
+---
+title: "RTC Fact Sheet: 2025 State of Evictions"
+format: 
+  html:
+    code-fold: true
+---
+
+```{r}
+#| label: setup
+#| include: true
+#| warning: false
+#| message: false
+
+library(DBI)
+library(RPostgres)
+library(flextable)
+library(sf)
+library(tidyverse)
+
+# Ensure that the Quarto render and RStudio read the same environment vars
+readRenviron(".Renviron")
+
+con <- dbConnect(
+  RPostgres::Postgres(),
+  dbname = Sys.getenv("PG_DBNAME"),
+  host     = Sys.getenv("PG_HOST"),
+  port     = Sys.getenv("PG_PORT"),
+  user     = Sys.getenv("PG_USER"),
+  password = Sys.getenv("PG_PASSWORD")
+  )
+```
+
+
+The following analyses were performed in support of [Right to Counsel's](https://www.righttocounselnyc.org/) annual State of Evictions fact sheet. 
+
+## Cumulative Eviction Filings
+
+Number of eviction filings from January 1, 2020 - December 31, 2025
+
+```{sql connection = con, output.var = "eviction_count_df", cache = TRUE}
+SELECT
+  COUNT(DISTINCT indexnumberid)::integer
+FROM oca_index
+WHERE fileddate >= MAKE_DATE(2020,1,1) 
+  AND fileddate <= MAKE_DATE(2025,12,31)
+  AND classification IN ('Holdover', 'Non-Payment');
+```
+
+In New York State, there were **`r scales::comma(eviction_count_df$count)`** eviction-oriented (holdover and non-payment) filings from January 1, 2020 to December 31, 2025.
+
+## Annual eviction filings
+```{sql connection = con, output.var = "eviction_count_annual_df", cache = TRUE}
+SELECT
+	EXTRACT(YEAR FROM fileddate) AS filed_year,
+	COUNT(DISTINCT indexnumberid)::integer
+FROM oca_index
+WHERE fileddate >= MAKE_DATE(2020,1,1) 
+  AND fileddate <= MAKE_DATE(2025,12,31)
+  AND classification IN ('Holdover', 'Non-Payment')
+GROUP BY filed_year;
+```
+
+The number of eviction-related (holdover and non-payment) eviction filings per year is:
+
+```{r}
+eviction_count_annual_table <- eviction_count_annual_df |> 
+  flextable() |> 
+  set_table_properties(width = 1, layout = "autofit") |> 
+  set_header_labels(
+    filed_year = "Year",
+    count = "Eviction Filings"
+  ) |> 
+  colformat_num(j=1,
+                big.mark = "") |> 
+  align(j=1,
+        align = "left",
+        part = "all")
+
+eviction_count_annual_table
+```
+
+## Which areas are hardest hit?
+
+### By court, January 1, 2020 - December 31, 2025:
+
+```{sql connection = con, output.var = "eviction_count_courts_df", cache = TRUE}
+SELECT
+	court,
+	COUNT(DISTINCT indexnumberid)::integer
+FROM oca_index
+WHERE fileddate >= MAKE_DATE(2020,1,1) 
+  AND fileddate <= MAKE_DATE(2025,12,31)
+  AND classification IN ('Holdover', 'Non-Payment')
+GROUP BY court
+ORDER BY count DESC
+LIMIT 10;
+```
+
+```{r}
+eviction_count_courts_table <- eviction_count_courts_df |> 
+  flextable() |> 
+  set_table_properties(width = 1, layout = "autofit") |> 
+  set_header_labels(
+    court = "Court",
+    count = "Eviction Filings"
+  )
+
+eviction_count_courts_table
+```
+
+### By court, January 1, 2025 - December 31, 2025:
+```{sql connection = con, output.var = "eviction_count_courts_25_df", cache = TRUE}
+SELECT
+	court,
+	COUNT(DISTINCT indexnumberid)::integer
+FROM oca_index
+WHERE fileddate >= MAKE_DATE(2025,1,1) 
+  AND fileddate <= MAKE_DATE(2025,12,31)
+  AND classification IN ('Holdover', 'Non-Payment')
+GROUP BY court
+ORDER BY count DESC
+LIMIT 10;
+```
+
+```{r}
+eviction_count_courts_25_table <- eviction_count_courts_25_df |> 
+  flextable() |> 
+  set_table_properties(width = 1, layout = "autofit") |> 
+  set_header_labels(
+    court = "Court",
+    count = "Eviction Filings"
+  )
+
+eviction_count_courts_25_table
+```
+
+*In the following filing counts by area, note that only 860,266 eviction filings (97.29%) have a location*
+
+### By NYS Assembly District: January 1, 2020 - December 31, 2025
+
+```{r, cache=TRUE}
+oca_index_5year_geom <- st_read(con, query = "
+SELECT DISTINCT(i.indexnumberid),
+    ST_Transform(a.geom, 2263) AS geom
+FROM oca_index i
+JOIN oca_addresses a ON i.indexnumberid = a.indexnumberid
+WHERE i.fileddate >= MAKE_DATE(2020,1,1) 
+    AND i.fileddate <= MAKE_DATE(2025,12,31)
+    AND i.classification IN ('Holdover', 'Non-Payment')
+    AND a.geom IS NOT NULL")
+```
+
+```{r, cache=TRUE}
+nysad <- read_sf("https://services6.arcgis.com/EbVsqZ18sv1kVJ3k/ArcGIS/rest/services/NYS_Assembly_Districts/FeatureServer/0/query?where=0%3D0&outFields=*&f=geojson") |> 
+  st_transform(2263)
+
+nyss <- read_sf("https://services6.arcgis.com/EbVsqZ18sv1kVJ3k/ArcGIS/rest/services/NYS_Senate_Districts/FeatureServer/0/query?where=0%3D0&outFields=*&f=geojson") |> 
+  st_transform(2263)
+
+nysad_upstate <- nysad |> 
+  filter(District > 87)
+
+nysad_downstate <- nysad |> 
+  filter(District <= 87)
+
+nyss_downstate <- nyss |> 
+  filter(DISTRICT <35 | DISTRICT == 36)
+
+nyss_upstate <- nyss |> 
+  filter(DISTRICT >= 35 & DISTRICT != 36)
+```
+
+#### Upstate Assembly Districts
+```{r, cache = TRUE}
+nysad_upstate_5year <- oca_index_5year_geom |> 
+  st_join(nysad_upstate |> 
+              select(District),
+            left = FALSE) |> 
+  st_drop_geometry() |> 
+  group_by(District) |> 
+  summarize(`Eviction Filings` = n()) |> 
+  arrange(desc(`Eviction Filings`)) |> 
+  head(10)
+
+nysad_upstate_5year_table <- nysad_upstate_5year |> 
+  flextable() |> 
+  set_table_properties(width = 1, layout = "autofit") |> 
+  align(j=1,
+        align = "left",
+        part = "all")
+
+nysad_upstate_5year_table
+```
+
+#### Downstate Assembly Districts
+```{r, cache=TRUE}
+nysad_downstate_5year <- oca_index_5year_geom |> 
+  st_join(nysad_downstate |> 
+              select(District),
+            left = FALSE) |> 
+  st_drop_geometry() |> 
+  group_by(District) |> 
+  summarize(`Eviction Filings` = n()) |> 
+  arrange(desc(`Eviction Filings`)) |> 
+  head(10)
+
+nysad_downstate_5year_table <- nysad_downstate_5year |> 
+  flextable() |> 
+  set_table_properties(width = 1, layout = "autofit") |> 
+  align(j=1,
+        align = "left",
+        part = "all")
+
+nysad_downstate_5year_table
+```
+
+### By NYS Assembly District: January 1, 2025 - December 31, 2025
+```{r, cache=TRUE}
+oca_index_1year_geom <- st_read(con, query = "
+SELECT DISTINCT(i.indexnumberid),
+    ST_Transform(a.geom, 2263) AS geom
+FROM oca_index i
+JOIN oca_addresses a ON i.indexnumberid = a.indexnumberid
+WHERE i.fileddate >= MAKE_DATE(2025,1,1) 
+    AND i.fileddate <= MAKE_DATE(2025,12,31)
+    AND i.classification IN ('Holdover', 'Non-Payment')
+    AND a.geom IS NOT NULL")
+```
+
+#### Upstate Assembly Districts
+```{r, cache = TRUE}
+nysad_upstate_1year <- oca_index_1year_geom |> 
+  st_join(nysad_upstate |> 
+              select(District),
+            left = FALSE) |> 
+  st_drop_geometry() |> 
+  group_by(District) |> 
+  summarize(`Eviction Filings` = n()) |> 
+  arrange(desc(`Eviction Filings`)) |> 
+  head(10)
+
+nysad_upstate_1year_table <- nysad_upstate_1year |> 
+  flextable() |> 
+  set_table_properties(width = 1, layout = "autofit") |> 
+  align(j=1,
+        align = "left",
+        part = "all")
+
+nysad_upstate_1year_table
+```
+
+#### Downstate Assembly Districts
+```{r, cache=TRUE}
+nysad_downstate_1year <- oca_index_1year_geom |> 
+  st_join(nysad_downstate |> 
+              select(District),
+            left = FALSE) |> 
+  st_drop_geometry() |> 
+  group_by(District) |> 
+  summarize(`Eviction Filings` = n()) |> 
+  arrange(desc(`Eviction Filings`)) |> 
+  head(10)
+
+nysad_downstate_1year_table <- nysad_downstate_1year |> 
+  flextable() |> 
+  set_table_properties(width = 1, layout = "autofit") |> 
+  align(j=1,
+        align = "left",
+        part = "all")
+
+nysad_downstate_1year_table
+```
+
+### By NYS Senate District, January 1, 2020 - December 31, 2025
+
+#### Upstate Senate Districts
+```{r, cache = TRUE}
+nyss_upstate_5year <- oca_index_5year_geom |> 
+  st_join(nyss_upstate |> 
+              select(DISTRICT),
+            left = FALSE) |> 
+  st_drop_geometry() |> 
+  group_by(DISTRICT) |> 
+  summarize(`Eviction Filings` = n()) |> 
+  arrange(desc(`Eviction Filings`)) |> 
+  head(10)
+
+nyss_upstate_5year_table <- nyss_upstate_5year |> 
+  flextable() |> 
+  set_table_properties(width = 1, layout = "autofit") |> 
+  align(j=1,
+        align = "left",
+        part = "all") |> 
+  set_header_labels(
+    DISTRICT = "District"
+  )
+
+nyss_upstate_5year_table
+```
+
+#### Downstate Senate Districts
+```{r, cache = TRUE}
+nyss_downstate_5year <- oca_index_5year_geom |> 
+  st_join(nyss_downstate |> 
+              select(DISTRICT),
+            left = FALSE) |> 
+  st_drop_geometry() |> 
+  group_by(DISTRICT) |> 
+  summarize(`Eviction Filings` = n()) |> 
+  arrange(desc(`Eviction Filings`)) |> 
+  head(10)
+
+nyss_downstate_5year_table <- nyss_downstate_5year |> 
+  flextable() |> 
+  set_table_properties(width = 1, layout = "autofit") |> 
+  align(j=1,
+        align = "left",
+        part = "all") |> 
+  set_header_labels(
+    DISTRICT = "District"
+  )
+
+nyss_downstate_5year_table
+```
+
+### By NYS Senate District, January 1, 2025 - December 31, 2025
+#### Upstate Senate Districts
+```{r, cache = TRUE}
+nyss_upstate_1year <- oca_index_1year_geom |> 
+  st_join(nyss_upstate |> 
+              select(DISTRICT),
+            left = FALSE) |> 
+  st_drop_geometry() |> 
+  group_by(DISTRICT) |> 
+  summarize(`Eviction Filings` = n()) |> 
+  arrange(desc(`Eviction Filings`)) |> 
+  head(10)
+
+nyss_upstate_1year_table <- nyss_upstate_1year |> 
+  flextable() |> 
+  set_table_properties(width = 1, layout = "autofit") |> 
+  align(j=1,
+        align = "left",
+        part = "all") |> 
+  set_header_labels(
+    DISTRICT = "District"
+  )
+
+nyss_upstate_1year_table
+```
+
+#### Downstate Senate Districts
+```{r, cache = TRUE}
+nyss_downstate_1year <- oca_index_1year_geom |> 
+  st_join(nyss_downstate |> 
+              select(DISTRICT),
+            left = FALSE) |> 
+  st_drop_geometry() |> 
+  group_by(DISTRICT) |> 
+  summarize(`Eviction Filings` = n()) |> 
+  arrange(desc(`Eviction Filings`)) |> 
+  head(10)
+
+nyss_downstate_1year_table <- nyss_downstate_1year |> 
+  flextable() |> 
+  set_table_properties(width = 1, layout = "autofit") |> 
+  align(j=1,
+        align = "left",
+        part = "all") |> 
+  set_header_labels(
+    DISTRICT = "District"
+  )
+
+nyss_downstate_1year_table
+```
