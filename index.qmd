@@ -373,3 +373,162 @@ nyss_downstate_1year_table <- nyss_downstate_1year |>
 
 nyss_downstate_1year_table
 ```
+
+### Executed Evictions in 2025
+
+Note: Of the 15,264 evictions executed statewide in 2025, only 15,023 have a location associated with them (98.4%)
+```{r, cache = TRUE}
+
+executed_evictions_25_geom <- st_read(con, query = "
+WITH executed_evictions_25 AS (
+	SELECT
+	  DISTINCT i.indexnumberid,
+	  w.executiondate
+	FROM oca_index i
+	JOIN oca_warrants w ON i.indexnumberid = w.indexnumberid
+	WHERE w.executiondate >= MAKE_DATE(2025,1,1) 
+	  AND w.executiondate <= MAKE_DATE(2025,12,31)
+	  AND i.classification IN ('Holdover', 'Non-Payment')
+	  AND w.executiondate IS NOT NULL
+)
+SELECT e.*,
+	ST_TRANSFORM(a.geom, 2263)
+FROM executed_evictions_25 e
+JOIN oca_addresses a on e.indexnumberid = a.indexnumberid
+WHERE a.geom IS NOT NULL;")
+
+nys_counties <- read_sf("https://services6.arcgis.com/EbVsqZ18sv1kVJ3k/ArcGIS/rest/services/NYS_Civil_Boundaries/FeatureServer/2/query?where=0%3D0&outFields=*&f=geojson") |> 
+  st_transform(2263)
+
+executed_evictions_25_byCty <- executed_evictions_25_geom |> 
+  st_join(nys_counties |> 
+            select(NAME)) |> 
+  st_drop_geometry() |> 
+  group_by(NAME) |> 
+  summarize(`Executed Evictions` = n()) |> 
+  arrange(desc(`Executed Evictions`)) |> 
+  head(10)
+
+executed_evictions_25_byCty_table <- executed_evictions_25_byCty |> 
+  flextable() |> 
+  set_table_properties(width = 1, layout = "autofit") |> 
+  align(j=1,
+        align = "left",
+        part = "all") |> 
+  set_header_labels(
+    NAME = "County"
+  )
+
+executed_evictions_25_byCty_table
+```
+
+### Evictions During the Winter Months (November 1 - April 15)
+
+#### Eviction filings
+```{sql, connection=con, output.var="winter_filings", cache=TRUE}
+WITH eviction_filings_with_season AS(
+	SELECT
+		DISTINCT indexnumberid,
+		EXTRACT(YEAR FROM fileddate) AS filed_year,
+		CASE 
+	        WHEN EXTRACT(MONTH FROM fileddate) >= 11 THEN TRUE
+	        WHEN EXTRACT(MONTH FROM fileddate) < 4 THEN TRUE
+	        WHEN EXTRACT(MONTH FROM fileddate) = 4 
+	             AND EXTRACT(DAY FROM fileddate) <= 15 THEN TRUE
+	        ELSE FALSE
+	    END AS winter_season
+	FROM oca_index
+	WHERE fileddate >= MAKE_DATE(2020,1,1) 
+	  AND fileddate <= MAKE_DATE(2025,12,31)
+	  AND classification IN ('Holdover', 'Non-Payment')
+)
+SELECT
+	filed_year,
+	COUNT(indexnumberid) AS all_filings,
+	SUM(winter_season::int) AS winter_filings,
+	100* ROUND(SUM(winter_season::int)::numeric/COUNT(indexnumberid),3) AS winter_filing_pct
+FROM eviction_filings_with_season
+GROUP BY filed_year
+ORDER BY filed_year;
+```
+
+```{r}
+winter_filings_table <- winter_filings |> 
+  # Convert from Postgres int64
+  mutate(
+    all_filings = as.numeric(all_filings),
+    winter_filings = as.numeric(winter_filings)
+  ) |> 
+  flextable() |> 
+  set_table_properties(width = 1, layout = "autofit") |> 
+  set_header_labels(
+    filed_year = "Year",
+    all_filings = "Annual Filings",
+    winter_filings = "Winter Filings",
+    winter_filing_pct = "Winter Filing Percentage"
+  ) |> 
+  colformat_num(j=1,
+                big.mark = "") |> 
+  colformat_int(j=2:3,
+                big.mark = ",") |> 
+  align(j=1,
+      align = "left",
+      part = "all")
+
+winter_filings_table
+```
+
+#### Executed evictions
+```{sql, connection=con, output.var="winter_executions", cache=TRUE}
+WITH eviction_exc_with_season AS(
+	SELECT
+		DISTINCT i.indexnumberid,
+		EXTRACT(YEAR FROM w.executiondate) AS executed_year,
+		CASE 
+	        WHEN EXTRACT(MONTH FROM w.executiondate) >= 11 THEN TRUE
+	        WHEN EXTRACT(MONTH FROM w.executiondate) < 4 THEN TRUE
+	        WHEN EXTRACT(MONTH FROM w.executiondate) = 4 
+	             AND EXTRACT(DAY FROM w.executiondate) <= 15 THEN TRUE
+	        ELSE FALSE
+	    END AS winter_season
+	FROM oca_index i
+	JOIN oca_warrants w on i.indexnumberid=w.indexnumberid
+	WHERE w.executiondate >= MAKE_DATE(2020,1,1) 
+	  AND w.executiondate <= MAKE_DATE(2025,12,31)
+	  AND i.classification IN ('Holdover', 'Non-Payment')
+)
+SELECT
+	executed_year,
+	COUNT(indexnumberid) AS all_executions,
+	SUM(winter_season::int) AS winter_executions,
+	100* ROUND(SUM(winter_season::int)::numeric/COUNT(indexnumberid),3) AS winter_execution_pct
+FROM eviction_exc_with_season
+GROUP BY executed_year
+ORDER BY executed_year;	
+```
+
+
+```{r}
+winter_executions_table <- winter_executions |> 
+  mutate(all_executions = as.numeric(all_executions),
+         winter_executions = as.numeric(winter_executions)
+        ) |>
+  flextable() |>
+  set_table_properties(width = 1, layout = "autofit") |> 
+  set_header_labels(
+    executed_year = "Year",
+    all_executions = "Annual Executions",
+    winter_executions = "Winter Executions",
+    winter_execution_pct = "Winter Execution Percentage"
+  ) |> 
+  colformat_num(j=1,
+                big.mark = "") |> 
+  colformat_int(j=2:3,
+                big.mark = ",") |> 
+  align(j=1,
+      align = "left",
+      part = "all")
+  
+winter_executions_table 
+```
+
