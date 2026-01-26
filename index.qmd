@@ -35,21 +35,24 @@ The following analyses were performed in support of [Right to Counsel's](https:/
 
 ## Cumulative Eviction Filings
 
-Number of eviction filings from January 1, 2020 - December 31, 2025
+### Number of eviction filings from January 1, 2020 - December 31, 2025
 
-```{sql connection = con, output.var = "eviction_count_df", cache = TRUE}
+```{sql connection = con, output.var = "eviction_count_df", cache=TRUE}
 SELECT
   COUNT(DISTINCT indexnumberid)::integer
 FROM oca_index
 WHERE fileddate >= MAKE_DATE(2020,1,1) 
   AND fileddate <= MAKE_DATE(2025,12,31)
-  AND classification IN ('Holdover', 'Non-Payment');
+  AND classification IN ('Holdover', 'Non-Payment')
+  AND (propertytype = 'Residential' OR propertytype IS NULL);
 ```
 
 In New York State, there were **`r scales::comma(eviction_count_df$count)`** eviction-oriented (holdover and non-payment) filings from January 1, 2020 to December 31, 2025.
 
+Please note that this analysis **excludes commercial evictions within New York City.** Unfortunately, outside of NYC, excluding commercial from residential eviction filings and executions is not possible given the current data.
+
 ## Annual eviction filings
-```{sql connection = con, output.var = "eviction_count_annual_df", cache = TRUE}
+```{sql connection = con, output.var = "eviction_count_annual_df", cache=TRUE}
 SELECT
 	EXTRACT(YEAR FROM fileddate) AS filed_year,
 	COUNT(DISTINCT indexnumberid)::integer
@@ -57,6 +60,7 @@ FROM oca_index
 WHERE fileddate >= MAKE_DATE(2020,1,1) 
   AND fileddate <= MAKE_DATE(2025,12,31)
   AND classification IN ('Holdover', 'Non-Payment')
+  AND (propertytype = 'Residential' OR propertytype IS NULL)
 GROUP BY filed_year;
 ```
 
@@ -83,7 +87,7 @@ eviction_count_annual_table
 
 ### By court, January 1, 2020 - December 31, 2025:
 
-```{sql connection = con, output.var = "eviction_count_courts_df", cache = TRUE}
+```{sql connection = con, output.var = "eviction_count_courts_df", cache=TRUE}
 SELECT
 	court,
 	COUNT(DISTINCT indexnumberid)::integer
@@ -91,6 +95,7 @@ FROM oca_index
 WHERE fileddate >= MAKE_DATE(2020,1,1) 
   AND fileddate <= MAKE_DATE(2025,12,31)
   AND classification IN ('Holdover', 'Non-Payment')
+  AND (propertytype = 'Residential' OR propertytype IS NULL)
 GROUP BY court
 ORDER BY count DESC
 LIMIT 10;
@@ -109,7 +114,7 @@ eviction_count_courts_table
 ```
 
 ### By court, January 1, 2025 - December 31, 2025:
-```{sql connection = con, output.var = "eviction_count_courts_25_df", cache = TRUE}
+```{sql connection = con, output.var = "eviction_count_courts_25_df", cache=TRUE}
 SELECT
 	court,
 	COUNT(DISTINCT indexnumberid)::integer
@@ -117,6 +122,7 @@ FROM oca_index
 WHERE fileddate >= MAKE_DATE(2025,1,1) 
   AND fileddate <= MAKE_DATE(2025,12,31)
   AND classification IN ('Holdover', 'Non-Payment')
+  AND (propertytype = 'Residential' OR propertytype IS NULL)
 GROUP BY court
 ORDER BY count DESC
 LIMIT 10;
@@ -134,8 +140,6 @@ eviction_count_courts_25_table <- eviction_count_courts_25_df |>
 eviction_count_courts_25_table
 ```
 
-*In the following filing counts by area, note that only 860,266 eviction filings (97.29%) have a location*
-
 ### By NYS Assembly District: January 1, 2020 - December 31, 2025
 
 ```{r, cache=TRUE}
@@ -147,8 +151,11 @@ JOIN oca_addresses a ON i.indexnumberid = a.indexnumberid
 WHERE i.fileddate >= MAKE_DATE(2020,1,1) 
     AND i.fileddate <= MAKE_DATE(2025,12,31)
     AND i.classification IN ('Holdover', 'Non-Payment')
+    AND (i.propertytype = 'Residential' OR i.propertytype IS NULL)
     AND a.geom IS NOT NULL")
 ```
+
+*In the following filing counts by area, note that only `r scales::comma(nrow(oca_index_5year_geom))` eviction filings (`r round((nrow(oca_index_5year_geom)/eviction_count_df$count*100),2)`%) have a location*
 
 ```{r, cache=TRUE}
 nysad <- read_sf("https://services6.arcgis.com/EbVsqZ18sv1kVJ3k/ArcGIS/rest/services/NYS_Assembly_Districts/FeatureServer/0/query?where=0%3D0&outFields=*&f=geojson") |> 
@@ -170,8 +177,8 @@ nyss_upstate <- nyss |>
   filter(DISTRICT >= 35 & DISTRICT != 36)
 ```
 
-#### Upstate Assembly Districts
-```{r, cache = TRUE}
+#### Upstate Assembly Districts (Outside NYC)
+```{r, cache=TRUE}
 nysad_upstate_5year <- oca_index_5year_geom |> 
   st_join(nysad_upstate |> 
               select(District),
@@ -192,7 +199,7 @@ nysad_upstate_5year_table <- nysad_upstate_5year |>
 nysad_upstate_5year_table
 ```
 
-#### Downstate Assembly Districts
+#### Downstate Assembly Districts (Within NYC)
 ```{r, cache=TRUE}
 nysad_downstate_5year <- oca_index_5year_geom |> 
   st_join(nysad_downstate |> 
@@ -224,11 +231,12 @@ JOIN oca_addresses a ON i.indexnumberid = a.indexnumberid
 WHERE i.fileddate >= MAKE_DATE(2025,1,1) 
     AND i.fileddate <= MAKE_DATE(2025,12,31)
     AND i.classification IN ('Holdover', 'Non-Payment')
+    AND (i.propertytype = 'Residential' OR i.propertytype IS NULL)
     AND a.geom IS NOT NULL")
 ```
 
-#### Upstate Assembly Districts
-```{r, cache = TRUE}
+#### Upstate Assembly Districts (Outside NYC)
+```{r, cache=TRUE}
 nysad_upstate_1year <- oca_index_1year_geom |> 
   st_join(nysad_upstate |> 
               select(District),
@@ -249,7 +257,7 @@ nysad_upstate_1year_table <- nysad_upstate_1year |>
 nysad_upstate_1year_table
 ```
 
-#### Downstate Assembly Districts
+#### Downstate Assembly Districts (Inside NYC)
 ```{r, cache=TRUE}
 nysad_downstate_1year <- oca_index_1year_geom |> 
   st_join(nysad_downstate |> 
@@ -273,8 +281,8 @@ nysad_downstate_1year_table
 
 ### By NYS Senate District, January 1, 2020 - December 31, 2025
 
-#### Upstate Senate Districts
-```{r, cache = TRUE}
+#### Upstate Senate Districts (Outside NYC)
+```{r, cache=TRUE}
 nyss_upstate_5year <- oca_index_5year_geom |> 
   st_join(nyss_upstate |> 
               select(DISTRICT),
@@ -298,8 +306,8 @@ nyss_upstate_5year_table <- nyss_upstate_5year |>
 nyss_upstate_5year_table
 ```
 
-#### Downstate Senate Districts
-```{r, cache = TRUE}
+#### Downstate Senate Districts (Inside NYC)
+```{r, cache=TRUE}
 nyss_downstate_5year <- oca_index_5year_geom |> 
   st_join(nyss_downstate |> 
               select(DISTRICT),
@@ -324,8 +332,8 @@ nyss_downstate_5year_table
 ```
 
 ### By NYS Senate District, January 1, 2025 - December 31, 2025
-#### Upstate Senate Districts
-```{r, cache = TRUE}
+#### Upstate Senate Districts (Outside NYC)
+```{r, cache=TRUE}
 nyss_upstate_1year <- oca_index_1year_geom |> 
   st_join(nyss_upstate |> 
               select(DISTRICT),
@@ -349,8 +357,8 @@ nyss_upstate_1year_table <- nyss_upstate_1year |>
 nyss_upstate_1year_table
 ```
 
-#### Downstate Senate Districts
-```{r, cache = TRUE}
+#### Downstate Senate Districts (Inside NYC)
+```{r, cache=TRUE}
 nyss_downstate_1year <- oca_index_1year_geom |> 
   st_join(nyss_downstate |> 
               select(DISTRICT),
@@ -375,10 +383,20 @@ nyss_downstate_1year_table
 ```
 
 ### Executed Evictions in 2025
+```{sql, connection = con, output.var="executed_evictions_25", cache=TRUE}
+SELECT
+  DISTINCT i.indexnumberid,
+  w.executiondate
+FROM oca_index i
+JOIN oca_warrants w ON i.indexnumberid = w.indexnumberid
+WHERE w.executiondate >= MAKE_DATE(2025,1,1) 
+  AND w.executiondate <= MAKE_DATE(2025,12,31)
+  AND i.classification IN ('Holdover', 'Non-Payment')
+  AND (i.propertytype = 'Residential' OR i.propertytype IS NULL)
+  AND w.executiondate IS NOT NULL
+```
 
-Note: Of the 15,264 evictions executed statewide in 2025, only 15,023 have a location associated with them (98.4%)
-```{r, cache = TRUE}
-
+```{r, cache=TRUE}
 executed_evictions_25_geom <- st_read(con, query = "
 WITH executed_evictions_25 AS (
 	SELECT
@@ -389,6 +407,7 @@ WITH executed_evictions_25 AS (
 	WHERE w.executiondate >= MAKE_DATE(2025,1,1) 
 	  AND w.executiondate <= MAKE_DATE(2025,12,31)
 	  AND i.classification IN ('Holdover', 'Non-Payment')
+	  AND (i.propertytype = 'Residential' OR i.propertytype IS NULL)
 	  AND w.executiondate IS NOT NULL
 )
 SELECT e.*,
@@ -396,7 +415,10 @@ SELECT e.*,
 FROM executed_evictions_25 e
 JOIN oca_addresses a on e.indexnumberid = a.indexnumberid
 WHERE a.geom IS NOT NULL;")
+```
+Note: Of the `r scales::comma(nrow(executed_evictions_25))` evictions executed statewide in 2025, only `r scales::comma(nrow(executed_evictions_25_geom))` have a location associated with them (`r round((nrow(executed_evictions_25_geom)/nrow(executed_evictions_25)*100),2)`%)
 
+``` {r, cache=TRUE}
 nys_counties <- read_sf("https://services6.arcgis.com/EbVsqZ18sv1kVJ3k/ArcGIS/rest/services/NYS_Civil_Boundaries/FeatureServer/2/query?where=0%3D0&outFields=*&f=geojson") |> 
   st_transform(2263)
 
@@ -422,6 +444,7 @@ executed_evictions_25_byCty_table <- executed_evictions_25_byCty |>
 executed_evictions_25_byCty_table
 ```
 
+
 ### Evictions During the Winter Months (November 1 - April 15)
 
 #### Eviction filings
@@ -441,6 +464,7 @@ WITH eviction_filings_with_season AS(
 	WHERE fileddate >= MAKE_DATE(2020,1,1) 
 	  AND fileddate <= MAKE_DATE(2025,12,31)
 	  AND classification IN ('Holdover', 'Non-Payment')
+	  AND (propertytype = 'Residential' OR propertytype IS NULL)
 )
 SELECT
 	filed_year,
@@ -465,7 +489,7 @@ winter_filings_table <- winter_filings |>
     filed_year = "Year",
     all_filings = "Annual Filings",
     winter_filings = "Winter Filings",
-    winter_filing_pct = "Winter Filing Percentage"
+    winter_filing_pct = "Winter Filing Percentage (%)"
   ) |> 
   colformat_num(j=1,
                 big.mark = "") |> 
@@ -496,6 +520,7 @@ WITH eviction_exc_with_season AS(
 	WHERE w.executiondate >= MAKE_DATE(2020,1,1) 
 	  AND w.executiondate <= MAKE_DATE(2025,12,31)
 	  AND i.classification IN ('Holdover', 'Non-Payment')
+	  AND (i.propertytype = 'Residential' OR i.propertytype IS NULL)
 )
 SELECT
 	executed_year,
@@ -519,7 +544,7 @@ winter_executions_table <- winter_executions |>
     executed_year = "Year",
     all_executions = "Annual Executions",
     winter_executions = "Winter Executions",
-    winter_execution_pct = "Winter Execution Percentage"
+    winter_execution_pct = "Winter Execution Percentage (%)"
   ) |> 
   colformat_num(j=1,
                 big.mark = "") |> 
