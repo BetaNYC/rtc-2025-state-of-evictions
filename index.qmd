@@ -178,7 +178,7 @@ nyss_downstate <- st_filter(nyss, bb, .predicate = st_intersects)
 nyss_upstate <- st_filter(nyss, bb, .predicate = st_disjoint)
 ```
 
-#### Upstate Assembly Districts (Outside NYC)
+#### Upstate Assembly Districts (Not intersecting with NYC Borough boundaries)
 ```{r, cache=FALSE}
 nysad_upstate_5year <- oca_index_5year_geom |> 
   st_join(nysad_upstate |> 
@@ -200,7 +200,7 @@ nysad_upstate_5year_table <- nysad_upstate_5year |>
 nysad_upstate_5year_table
 ```
 
-#### Downstate Assembly Districts (Within NYC)
+#### Downstate Assembly Districts (Intersecting with NYC Borough boundaries)
 ```{r, cache=FALSE}
 nysad_downstate_5year <- oca_index_5year_geom |> 
   st_join(nysad_downstate |> 
@@ -236,7 +236,7 @@ WHERE i.fileddate >= MAKE_DATE(2025,1,1)
     AND a.geom IS NOT NULL")
 ```
 
-#### Upstate Assembly Districts (Outside NYC)
+#### Upstate Assembly Districts (Not intersecting with NYC Borough boundaries)
 ```{r, cache=FALSE}
 nysad_upstate_1year <- oca_index_1year_geom |> 
   st_join(nysad_upstate |> 
@@ -258,7 +258,7 @@ nysad_upstate_1year_table <- nysad_upstate_1year |>
 nysad_upstate_1year_table
 ```
 
-#### Downstate Assembly Districts (Inside NYC)
+#### Downstate Assembly Districts (Intersecting with NYC Borough boundaries)
 ```{r, cache=FALSE}
 nysad_downstate_1year <- oca_index_1year_geom |> 
   st_join(nysad_downstate |> 
@@ -282,7 +282,7 @@ nysad_downstate_1year_table
 
 ### By NYS Senate District, January 1, 2020 - December 31, 2025
 
-#### Upstate Senate Districts (Outside NYC)
+#### Upstate Senate Districts (Not intersecting with NYC Borough boundaries)
 ```{r, cache=FALSE}
 nyss_upstate_5year <- oca_index_5year_geom |> 
   st_join(nyss_upstate |> 
@@ -307,7 +307,7 @@ nyss_upstate_5year_table <- nyss_upstate_5year |>
 nyss_upstate_5year_table
 ```
 
-#### Downstate Senate Districts (Inside NYC)
+#### Downstate Senate Districts (Intersecting with NYC Borough boundaries)
 ```{r, cache=FALSE}
 nyss_downstate_5year <- oca_index_5year_geom |> 
   st_join(nyss_downstate |> 
@@ -333,7 +333,7 @@ nyss_downstate_5year_table
 ```
 
 ### By NYS Senate District, January 1, 2025 - December 31, 2025
-#### Upstate Senate Districts (Outside NYC)
+#### Upstate Senate Districts (Not intersecting with NYC Borough boundaries)
 ```{r, cache=FALSE}
 nyss_upstate_1year <- oca_index_1year_geom |> 
   st_join(nyss_upstate |> 
@@ -358,7 +358,7 @@ nyss_upstate_1year_table <- nyss_upstate_1year |>
 nyss_upstate_1year_table
 ```
 
-#### Downstate Senate Districts (Inside NYC)
+#### Downstate Senate Districts (Intersecting with NYC Borough boundaries)
 ```{r, cache=FALSE}
 nyss_downstate_1year <- oca_index_1year_geom |> 
   st_join(nyss_downstate |> 
