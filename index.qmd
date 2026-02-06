@@ -37,7 +37,7 @@ The following analyses were performed in support of [Right to Counsel's](https:/
 
 ### Number of eviction filings from January 1, 2020 - December 31, 2025
 
-```{sql connection = con, output.var = "eviction_count_df", cache=TRUE}
+```{sql connection = con, output.var = "eviction_count_df", cache=FALSE}
 SELECT
   COUNT(DISTINCT indexnumberid)::integer
 FROM oca_index
@@ -52,7 +52,7 @@ In New York State, there were **`r scales::comma(eviction_count_df$count)`** evi
 Please note that this analysis **excludes commercial evictions within New York City.** Unfortunately, outside of NYC, excluding commercial from residential eviction filings and executions is not possible given the current data.
 
 ## Annual eviction filings
-```{sql connection = con, output.var = "eviction_count_annual_df", cache=TRUE}
+```{sql connection = con, output.var = "eviction_count_annual_df", cache=FALSE}
 SELECT
 	EXTRACT(YEAR FROM fileddate) AS filed_year,
 	COUNT(DISTINCT indexnumberid)::integer
@@ -87,7 +87,7 @@ eviction_count_annual_table
 
 ### By court, January 1, 2020 - December 31, 2025:
 
-```{sql connection = con, output.var = "eviction_count_courts_df", cache=TRUE}
+```{sql connection = con, output.var = "eviction_count_courts_df", cache=FALSE}
 SELECT
 	court,
 	COUNT(DISTINCT indexnumberid)::integer
@@ -114,7 +114,7 @@ eviction_count_courts_table
 ```
 
 ### By court, January 1, 2025 - December 31, 2025:
-```{sql connection = con, output.var = "eviction_count_courts_25_df", cache=TRUE}
+```{sql connection = con, output.var = "eviction_count_courts_25_df", cache=FALSE}
 SELECT
 	court,
 	COUNT(DISTINCT indexnumberid)::integer
@@ -142,7 +142,7 @@ eviction_count_courts_25_table
 
 ### By NYS Assembly District: January 1, 2020 - December 31, 2025
 
-```{r, cache=TRUE}
+```{r, cache=FALSE}
 oca_index_5year_geom <- st_read(con, query = "
 SELECT DISTINCT(i.indexnumberid),
     ST_Transform(a.geom, 2263) AS geom
@@ -157,28 +157,29 @@ WHERE i.fileddate >= MAKE_DATE(2020,1,1)
 
 *In the following filing counts by area, note that only `r scales::comma(nrow(oca_index_5year_geom))` eviction filings (`r round((nrow(oca_index_5year_geom)/eviction_count_df$count*100),2)`%) have a location*
 
-```{r, cache=TRUE}
+```{r, cache=FALSE}
+bb <- read_sf("https://services5.arcgis.com/GfwWNkhOj9bNBqoJ/arcgis/rest/services/NYC_Borough_Boundary/FeatureServer/0/query?where=1=1&outFields=*&outSR=4326&f=pgeojson") |> 
+  st_transform(2263) |> 
+  st_make_valid() |> 
+  st_union()
+
 nysad <- read_sf("https://services6.arcgis.com/EbVsqZ18sv1kVJ3k/ArcGIS/rest/services/NYS_Assembly_Districts/FeatureServer/0/query?where=0%3D0&outFields=*&f=geojson") |> 
   st_transform(2263)
 
 nyss <- read_sf("https://services6.arcgis.com/EbVsqZ18sv1kVJ3k/ArcGIS/rest/services/NYS_Senate_Districts/FeatureServer/0/query?where=0%3D0&outFields=*&f=geojson") |> 
   st_transform(2263)
 
-nysad_upstate <- nysad |> 
-  filter(District > 87)
+nysad_downstate <- st_filter(nysad, bb, .predicate = st_intersects)
 
-nysad_downstate <- nysad |> 
-  filter(District <= 87)
+nysad_upstate <- st_filter(nysad, bb, .predicate = st_disjoint)
 
-nyss_downstate <- nyss |> 
-  filter(DISTRICT <35 | DISTRICT == 36)
-
-nyss_upstate <- nyss |> 
-  filter(DISTRICT >= 35 & DISTRICT != 36)
+nyss_downstate <- st_filter(nyss, bb, .predicate = st_intersects)
+  
+nyss_upstate <- st_filter(nyss, bb, .predicate = st_disjoint)
 ```
 
 #### Upstate Assembly Districts (Outside NYC)
-```{r, cache=TRUE}
+```{r, cache=FALSE}
 nysad_upstate_5year <- oca_index_5year_geom |> 
   st_join(nysad_upstate |> 
               select(District),
@@ -200,7 +201,7 @@ nysad_upstate_5year_table
 ```
 
 #### Downstate Assembly Districts (Within NYC)
-```{r, cache=TRUE}
+```{r, cache=FALSE}
 nysad_downstate_5year <- oca_index_5year_geom |> 
   st_join(nysad_downstate |> 
               select(District),
@@ -222,7 +223,7 @@ nysad_downstate_5year_table
 ```
 
 ### By NYS Assembly District: January 1, 2025 - December 31, 2025
-```{r, cache=TRUE}
+```{r, cache=FALSE}
 oca_index_1year_geom <- st_read(con, query = "
 SELECT DISTINCT(i.indexnumberid),
     ST_Transform(a.geom, 2263) AS geom
@@ -236,7 +237,7 @@ WHERE i.fileddate >= MAKE_DATE(2025,1,1)
 ```
 
 #### Upstate Assembly Districts (Outside NYC)
-```{r, cache=TRUE}
+```{r, cache=FALSE}
 nysad_upstate_1year <- oca_index_1year_geom |> 
   st_join(nysad_upstate |> 
               select(District),
@@ -258,7 +259,7 @@ nysad_upstate_1year_table
 ```
 
 #### Downstate Assembly Districts (Inside NYC)
-```{r, cache=TRUE}
+```{r, cache=FALSE}
 nysad_downstate_1year <- oca_index_1year_geom |> 
   st_join(nysad_downstate |> 
               select(District),
@@ -282,7 +283,7 @@ nysad_downstate_1year_table
 ### By NYS Senate District, January 1, 2020 - December 31, 2025
 
 #### Upstate Senate Districts (Outside NYC)
-```{r, cache=TRUE}
+```{r, cache=FALSE}
 nyss_upstate_5year <- oca_index_5year_geom |> 
   st_join(nyss_upstate |> 
               select(DISTRICT),
@@ -307,7 +308,7 @@ nyss_upstate_5year_table
 ```
 
 #### Downstate Senate Districts (Inside NYC)
-```{r, cache=TRUE}
+```{r, cache=FALSE}
 nyss_downstate_5year <- oca_index_5year_geom |> 
   st_join(nyss_downstate |> 
               select(DISTRICT),
@@ -333,7 +334,7 @@ nyss_downstate_5year_table
 
 ### By NYS Senate District, January 1, 2025 - December 31, 2025
 #### Upstate Senate Districts (Outside NYC)
-```{r, cache=TRUE}
+```{r, cache=FALSE}
 nyss_upstate_1year <- oca_index_1year_geom |> 
   st_join(nyss_upstate |> 
               select(DISTRICT),
@@ -358,7 +359,7 @@ nyss_upstate_1year_table
 ```
 
 #### Downstate Senate Districts (Inside NYC)
-```{r, cache=TRUE}
+```{r, cache=FALSE}
 nyss_downstate_1year <- oca_index_1year_geom |> 
   st_join(nyss_downstate |> 
               select(DISTRICT),
@@ -383,7 +384,7 @@ nyss_downstate_1year_table
 ```
 
 ### Executed Evictions in 2025
-```{sql, connection = con, output.var="executed_evictions_25", cache=TRUE}
+```{sql, connection = con, output.var="executed_evictions_25", cache=FALSE}
 SELECT
   DISTINCT i.indexnumberid,
   w.executiondate
@@ -396,7 +397,7 @@ WHERE w.executiondate >= MAKE_DATE(2025,1,1)
   AND w.executiondate IS NOT NULL
 ```
 
-```{r, cache=TRUE}
+```{r, cache=FALSE}
 executed_evictions_25_geom <- st_read(con, query = "
 WITH executed_evictions_25 AS (
 	SELECT
@@ -418,7 +419,7 @@ WHERE a.geom IS NOT NULL;")
 ```
 Note: Of the `r scales::comma(nrow(executed_evictions_25))` evictions executed statewide in 2025, only `r scales::comma(nrow(executed_evictions_25_geom))` have a location associated with them (`r round((nrow(executed_evictions_25_geom)/nrow(executed_evictions_25)*100),2)`%)
 
-``` {r, cache=TRUE}
+``` {r, cache=FALSE}
 nys_counties <- read_sf("https://services6.arcgis.com/EbVsqZ18sv1kVJ3k/ArcGIS/rest/services/NYS_Civil_Boundaries/FeatureServer/2/query?where=0%3D0&outFields=*&f=geojson") |> 
   st_transform(2263)
 
@@ -448,7 +449,7 @@ executed_evictions_25_byCty_table
 ### Evictions During the Winter Months (November 1 - April 15)
 
 #### Eviction filings
-```{sql, connection=con, output.var="winter_filings", cache=TRUE}
+```{sql, connection=con, output.var="winter_filings", cache=FALSE}
 WITH eviction_filings_with_season AS(
 	SELECT
 		DISTINCT indexnumberid,
@@ -503,7 +504,7 @@ winter_filings_table
 ```
 
 #### Executed evictions
-```{sql, connection=con, output.var="winter_executions", cache=TRUE}
+```{sql, connection=con, output.var="winter_executions", cache=FALSE}
 WITH eviction_exc_with_season AS(
 	SELECT
 		DISTINCT i.indexnumberid,
