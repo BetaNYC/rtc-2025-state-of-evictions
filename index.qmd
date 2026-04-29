@@ -16,6 +16,9 @@ library(RPostgres)
 library(flextable)
 library(sf)
 library(tidyverse)
+library(socratadata)
+library(lubridate)
+library(writexl)
 
 # Ensure that the Quarto render and RStudio read the same environment vars
 readRenviron(".Renviron")
@@ -33,35 +36,135 @@ con <- dbConnect(
 
 The following analyses were performed in support of [Right to Counsel's](https://www.righttocounselnyc.org/) annual State of Evictions fact sheet. 
 
+```{r, cache=TRUE, message=FALSE}
+# First, pull data. Then, work locally in R.
+
+### Evictions db SQL queries ###
+
+# Eviction Filings, 2020 - 2025, all
+filings_20_25 <- dbGetQuery(con, "
+  SELECT DISTINCT(i.indexnumberid), fileddate, court
+  FROM oca_index i
+  WHERE i.fileddate >= MAKE_DATE(2020,1,1) 
+      AND i.fileddate <= MAKE_DATE(2025,12,31)
+      AND i.classification IN ('Holdover', 'Non-Payment')
+      AND (i.propertytype = 'Residential' OR i.propertytype IS NULL);
+")
+
+# Eviction Filings, 2020 - 2025, with location
+filings_20_25_sf <- st_read(con, query = "
+  SELECT DISTINCT(i.indexnumberid), fileddate, court,
+    ST_Transform(a.geom, 2263) AS geom
+  FROM oca_index i
+  JOIN oca_addresses a ON i.indexnumberid = a.indexnumberid
+  WHERE i.fileddate >= MAKE_DATE(2020,1,1) 
+      AND i.fileddate <= MAKE_DATE(2025,12,31)
+      AND i.classification IN ('Holdover', 'Non-Payment')
+      AND (i.propertytype = 'Residential' OR i.propertytype IS NULL)
+      AND a.geom IS NOT NULL;
+")
+
+# Executed Evictions, 2020 - 2025, all
+executions_20_25 <- dbGetQuery(con, "
+  SELECT DISTINCT(i.indexnumberid), w.executiondate, i.court
+  FROM oca_index i
+  JOIN oca_warrants w ON i.indexnumberid = w.indexnumberid
+  WHERE w.executiondate >= MAKE_DATE(2020,1,1) 
+    AND w.executiondate <= MAKE_DATE(2025,12,31)
+    AND i.classification IN ('Holdover', 'Non-Payment')
+    AND (i.propertytype = 'Residential' OR i.propertytype IS NULL)
+    AND w.executiondate IS NOT NULL;
+")
+
+# Executed Evictions, 2020 - 2025, with location
+executions_20_25_sf <- st_read(con, query = "
+  WITH executed_evictions AS (
+  	SELECT DISTINCT(i.indexnumberid), w.executiondate, i.court
+  	FROM oca_index i
+  	JOIN oca_warrants w ON i.indexnumberid = w.indexnumberid
+  	WHERE w.executiondate >= MAKE_DATE(2020,1,1) 
+  	  AND w.executiondate <= MAKE_DATE(2025,12,31)
+  	  AND i.classification IN ('Holdover', 'Non-Payment')
+  	  AND (i.propertytype = 'Residential' OR i.propertytype IS NULL)
+  	  AND w.executiondate IS NOT NULL
+  )
+  SELECT e.*, ST_TRANSFORM(a.geom, 2263)
+  FROM executed_evictions e
+  JOIN oca_addresses a on e.indexnumberid = a.indexnumberid
+  WHERE a.geom IS NOT NULL
+")
+
+### Boundary Files ###
+# NYC Boundary via borough boundary union
+nyc <- read_sf("https://services5.arcgis.com/GfwWNkhOj9bNBqoJ/arcgis/rest/services/NYC_Borough_Boundary/FeatureServer/0/query?where=1=1&outFields=*&outSR=4326&f=pgeojson") |> 
+  st_transform(2263) |> 
+  st_make_valid() |> 
+  st_union()
+
+# NYS Assembly
+nysad <- read_sf("https://services6.arcgis.com/EbVsqZ18sv1kVJ3k/ArcGIS/rest/services/NYS_Assembly_Districts/FeatureServer/0/query?where=0%3D0&outFields=*&f=geojson") |> 
+  st_transform(2263) |> 
+  st_make_valid()
+
+# NYS Senate
+nyss <- read_sf("https://services6.arcgis.com/EbVsqZ18sv1kVJ3k/ArcGIS/rest/services/NYS_Senate_Districts/FeatureServer/0/query?where=0%3D0&outFields=*&f=geojson") |> 
+  st_transform(2263) |> 
+  st_make_valid()
+
+# NYC Council
+nyc_council <- read_sf("https://services5.arcgis.com/GfwWNkhOj9bNBqoJ/arcgis/rest/services/NYC_City_Council_Districts/FeatureServer/0/query?where=1=1&outFields=*&outSR=4326&f=pgeojson") |> 
+  st_transform(2263) |> 
+  st_make_valid()
+
+# NYC Council members
+nyc_council_members <- soc_read(
+  "https://data.cityofnewyork.us/City-Government/City-Council-Members-1999-to-Present-/uvw5-9znb.json"
+) |> 
+  # Filter to current term
+  filter(Sys.Date() %within% interval(start = term_start, end = term_end))
+
+# Join CMs to spatial file
+nyc_council <- nyc_council |> 
+  left_join(nyc_council_members |> 
+              select(name, district),
+            by = join_by(CounDist == district)) |> 
+  # Designate Vacant seats
+  mutate(name = replace_na(name, "Vacant"))
+
+# NYC Boundaries via Borough union
+bb <- read_sf("https://services5.arcgis.com/GfwWNkhOj9bNBqoJ/arcgis/rest/services/NYC_Borough_Boundary/FeatureServer/0/query?where=1=1&outFields=*&outSR=4326&f=pgeojson") |> 
+  st_transform(2263) |> 
+  st_make_valid() |> 
+  st_union()
+
+# NYS Counties
+nys_counties <- read_sf("https://services6.arcgis.com/EbVsqZ18sv1kVJ3k/ArcGIS/rest/services/NYS_Civil_Boundaries/FeatureServer/2/query?where=0%3D0&outFields=*&f=geojson") |> 
+  st_transform(2263)
+
+# Separate out upstate / downstate
+nysad_downstate <- st_filter(nysad, bb, .predicate = st_intersects)
+
+nysad_upstate <- st_filter(nysad, bb, .predicate = st_disjoint)
+
+nyss_downstate <- st_filter(nyss, bb, .predicate = st_intersects)
+  
+nyss_upstate <- st_filter(nyss, bb, .predicate = st_disjoint)
+```
+
+
 ## Cumulative Eviction Filings
 
 ### Number of eviction filings from January 1, 2020 - December 31, 2025
 
-```{sql connection = con, output.var = "eviction_count_df", cache=FALSE}
-SELECT
-  COUNT(DISTINCT indexnumberid)::integer
-FROM oca_index
-WHERE fileddate >= MAKE_DATE(2020,1,1) 
-  AND fileddate <= MAKE_DATE(2025,12,31)
-  AND classification IN ('Holdover', 'Non-Payment')
-  AND (propertytype = 'Residential' OR propertytype IS NULL);
-```
-
-In New York State, there were **`r scales::comma(eviction_count_df$count)`** eviction-oriented (holdover and non-payment) filings from January 1, 2020 to December 31, 2025.
+In New York State, there were **`r scales::comma(nrow(filings_20_25))`** eviction-oriented (holdover and non-payment) filings from January 1, 2020 to December 31, 2025.
 
 Please note that this analysis **excludes commercial evictions within New York City.** Unfortunately, outside of NYC, excluding commercial from residential eviction filings and executions is not possible given the current data.
 
 ## Annual eviction filings
-```{sql connection = con, output.var = "eviction_count_annual_df", cache=FALSE}
-SELECT
-	EXTRACT(YEAR FROM fileddate) AS filed_year,
-	COUNT(DISTINCT indexnumberid)::integer
-FROM oca_index
-WHERE fileddate >= MAKE_DATE(2020,1,1) 
-  AND fileddate <= MAKE_DATE(2025,12,31)
-  AND classification IN ('Holdover', 'Non-Payment')
-  AND (propertytype = 'Residential' OR propertytype IS NULL)
-GROUP BY filed_year;
+```{r}
+eviction_count_annual_df <- filings_20_25 |> 
+  group_by(filed_year = year(fileddate)) |> 
+  summarize(count = n())
 ```
 
 The number of eviction-related (holdover and non-payment) eviction filings per year is:
@@ -86,23 +189,14 @@ eviction_count_annual_table
 ## Which areas are hardest hit?
 
 ### By court, January 1, 2020 - December 31, 2025:
-
-```{sql connection = con, output.var = "eviction_count_courts_df", cache=FALSE}
-SELECT
-	court,
-	COUNT(DISTINCT indexnumberid)::integer
-FROM oca_index
-WHERE fileddate >= MAKE_DATE(2020,1,1) 
-  AND fileddate <= MAKE_DATE(2025,12,31)
-  AND classification IN ('Holdover', 'Non-Payment')
-  AND (propertytype = 'Residential' OR propertytype IS NULL)
-GROUP BY court
-ORDER BY count DESC
-LIMIT 10;
-```
-
 ```{r}
+eviction_count_courts_df <- filings_20_25 |> 
+  group_by(court) |> 
+  summarize(count = n()) |> 
+  arrange(desc(count))
+
 eviction_count_courts_table <- eviction_count_courts_df |> 
+  head(10) |> 
   flextable() |> 
   set_table_properties(width = 1, layout = "autofit") |> 
   set_header_labels(
@@ -114,22 +208,15 @@ eviction_count_courts_table
 ```
 
 ### By court, January 1, 2025 - December 31, 2025:
-```{sql connection = con, output.var = "eviction_count_courts_25_df", cache=FALSE}
-SELECT
-	court,
-	COUNT(DISTINCT indexnumberid)::integer
-FROM oca_index
-WHERE fileddate >= MAKE_DATE(2025,1,1) 
-  AND fileddate <= MAKE_DATE(2025,12,31)
-  AND classification IN ('Holdover', 'Non-Payment')
-  AND (propertytype = 'Residential' OR propertytype IS NULL)
-GROUP BY court
-ORDER BY count DESC
-LIMIT 10;
-```
-
 ```{r}
+eviction_count_courts_25_df <- filings_20_25 |> 
+  filter(year(fileddate) == 2025) |> 
+  group_by(court) |> 
+  summarize(count = n()) |> 
+  arrange(desc(count))
+
 eviction_count_courts_25_table <- eviction_count_courts_25_df |> 
+  head(10) |> 
   flextable() |> 
   set_table_properties(width = 1, layout = "autofit") |> 
   set_header_labels(
@@ -142,77 +229,46 @@ eviction_count_courts_25_table
 
 ### By NYS Assembly District: January 1, 2020 - December 31, 2025
 
-```{r, cache=FALSE}
-oca_index_5year_geom <- st_read(con, query = "
-SELECT DISTINCT(i.indexnumberid),
-    ST_Transform(a.geom, 2263) AS geom
-FROM oca_index i
-JOIN oca_addresses a ON i.indexnumberid = a.indexnumberid
-WHERE i.fileddate >= MAKE_DATE(2020,1,1) 
-    AND i.fileddate <= MAKE_DATE(2025,12,31)
-    AND i.classification IN ('Holdover', 'Non-Payment')
-    AND (i.propertytype = 'Residential' OR i.propertytype IS NULL)
-    AND a.geom IS NOT NULL")
-```
-
-*In the following filing counts by area, note that only `r scales::comma(nrow(oca_index_5year_geom))` eviction filings (`r round((nrow(oca_index_5year_geom)/eviction_count_df$count*100),2)`%) have a location*
-
-```{r, cache=FALSE}
-bb <- read_sf("https://services5.arcgis.com/GfwWNkhOj9bNBqoJ/arcgis/rest/services/NYC_Borough_Boundary/FeatureServer/0/query?where=1=1&outFields=*&outSR=4326&f=pgeojson") |> 
-  st_transform(2263) |> 
-  st_make_valid() |> 
-  st_union()
-
-nysad <- read_sf("https://services6.arcgis.com/EbVsqZ18sv1kVJ3k/ArcGIS/rest/services/NYS_Assembly_Districts/FeatureServer/0/query?where=0%3D0&outFields=*&f=geojson") |> 
-  st_transform(2263)
-
-nyss <- read_sf("https://services6.arcgis.com/EbVsqZ18sv1kVJ3k/ArcGIS/rest/services/NYS_Senate_Districts/FeatureServer/0/query?where=0%3D0&outFields=*&f=geojson") |> 
-  st_transform(2263)
-
-nysad_downstate <- st_filter(nysad, bb, .predicate = st_intersects)
-
-nysad_upstate <- st_filter(nysad, bb, .predicate = st_disjoint)
-
-nyss_downstate <- st_filter(nyss, bb, .predicate = st_intersects)
-  
-nyss_upstate <- st_filter(nyss, bb, .predicate = st_disjoint)
-```
+*In the following filing counts by area, note that only `r scales::comma(nrow(filings_20_25_sf))` eviction filings (`r round((nrow(filings_20_25_sf)/nrow(filings_20_25)*100),2)`%) have a location*
 
 #### Upstate Assembly Districts (Not intersecting with NYC Borough boundaries)
 ```{r, cache=FALSE}
-nysad_upstate_5year <- oca_index_5year_geom |> 
+nysad_upstate_5year <- filings_20_25_sf |> 
   st_join(nysad_upstate |> 
-              select(District),
+              select(District, Name),
             left = FALSE) |> 
   st_drop_geometry() |> 
-  group_by(District) |> 
+  group_by(District, Name) |> 
   summarize(`Eviction Filings` = n()) |> 
-  arrange(desc(`Eviction Filings`)) |> 
-  head(10)
+  arrange(desc(`Eviction Filings`))
 
 nysad_upstate_5year_table <- nysad_upstate_5year |> 
+  head(10) |> 
   flextable() |> 
   set_table_properties(width = 1, layout = "autofit") |> 
   align(j=1,
         align = "left",
-        part = "all")
+        part = "all") |> 
+  set_header_labels(
+    Name = "Representative"
+  )
 
 nysad_upstate_5year_table
 ```
 
 #### Downstate Assembly Districts (Intersecting with NYC Borough boundaries)
 ```{r, cache=FALSE}
-nysad_downstate_5year <- oca_index_5year_geom |> 
+nysad_downstate_5year <- filings_20_25_sf |> 
   st_join(nysad_downstate |> 
-              select(District),
+              select(District, Name),
             left = FALSE) |> 
   st_drop_geometry() |> 
-  group_by(District) |> 
+  group_by(District, Name) |> 
   summarize(`Eviction Filings` = n()) |> 
-  arrange(desc(`Eviction Filings`)) |> 
-  head(10)
+  arrange(desc(`Eviction Filings`))
 
 nysad_downstate_5year_table <- nysad_downstate_5year |> 
+  head(10) |> 
   flextable() |> 
   set_table_properties(width = 1, layout = "autofit") |> 
   align(j=1,
@@ -223,32 +279,21 @@ nysad_downstate_5year_table
 ```
 
 ### By NYS Assembly District: January 1, 2025 - December 31, 2025
-```{r, cache=FALSE}
-oca_index_1year_geom <- st_read(con, query = "
-SELECT DISTINCT(i.indexnumberid),
-    ST_Transform(a.geom, 2263) AS geom
-FROM oca_index i
-JOIN oca_addresses a ON i.indexnumberid = a.indexnumberid
-WHERE i.fileddate >= MAKE_DATE(2025,1,1) 
-    AND i.fileddate <= MAKE_DATE(2025,12,31)
-    AND i.classification IN ('Holdover', 'Non-Payment')
-    AND (i.propertytype = 'Residential' OR i.propertytype IS NULL)
-    AND a.geom IS NOT NULL")
-```
 
 #### Upstate Assembly Districts (Not intersecting with NYC Borough boundaries)
 ```{r, cache=FALSE}
-nysad_upstate_1year <- oca_index_1year_geom |> 
+nysad_upstate_1year <- filings_20_25_sf |> 
+  filter(year(fileddate) == 2025) |> 
   st_join(nysad_upstate |> 
-              select(District),
+              select(District, Name),
             left = FALSE) |> 
   st_drop_geometry() |> 
-  group_by(District) |> 
+  group_by(District, Name) |> 
   summarize(`Eviction Filings` = n()) |> 
-  arrange(desc(`Eviction Filings`)) |> 
-  head(10)
+  arrange(desc(`Eviction Filings`))
 
 nysad_upstate_1year_table <- nysad_upstate_1year |> 
+  head(10) |> 
   flextable() |> 
   set_table_properties(width = 1, layout = "autofit") |> 
   align(j=1,
@@ -260,17 +305,18 @@ nysad_upstate_1year_table
 
 #### Downstate Assembly Districts (Intersecting with NYC Borough boundaries)
 ```{r, cache=FALSE}
-nysad_downstate_1year <- oca_index_1year_geom |> 
+nysad_downstate_1year <- filings_20_25_sf |> 
+  filter(year(fileddate) == 2025) |>  
   st_join(nysad_downstate |> 
-              select(District),
+              select(District, Name),
             left = FALSE) |> 
   st_drop_geometry() |> 
-  group_by(District) |> 
+  group_by(District, Name) |> 
   summarize(`Eviction Filings` = n()) |> 
-  arrange(desc(`Eviction Filings`)) |> 
-  head(10)
+  arrange(desc(`Eviction Filings`)) 
 
 nysad_downstate_1year_table <- nysad_downstate_1year |> 
+  head(10) |> 
   flextable() |> 
   set_table_properties(width = 1, layout = "autofit") |> 
   align(j=1,
@@ -284,24 +330,25 @@ nysad_downstate_1year_table
 
 #### Upstate Senate Districts (Not intersecting with NYC Borough boundaries)
 ```{r, cache=FALSE}
-nyss_upstate_5year <- oca_index_5year_geom |> 
+nyss_upstate_5year <- filings_20_25_sf |> 
   st_join(nyss_upstate |> 
-              select(DISTRICT),
+              select(DISTRICT, NAME),
             left = FALSE) |> 
   st_drop_geometry() |> 
-  group_by(DISTRICT) |> 
+  group_by(DISTRICT, NAME) |> 
   summarize(`Eviction Filings` = n()) |> 
-  arrange(desc(`Eviction Filings`)) |> 
-  head(10)
+  arrange(desc(`Eviction Filings`)) 
 
 nyss_upstate_5year_table <- nyss_upstate_5year |> 
+  head(10) |> 
   flextable() |> 
   set_table_properties(width = 1, layout = "autofit") |> 
   align(j=1,
         align = "left",
         part = "all") |> 
   set_header_labels(
-    DISTRICT = "District"
+    DISTRICT = "District",
+    NAME = "Representative"
   )
 
 nyss_upstate_5year_table
@@ -309,24 +356,25 @@ nyss_upstate_5year_table
 
 #### Downstate Senate Districts (Intersecting with NYC Borough boundaries)
 ```{r, cache=FALSE}
-nyss_downstate_5year <- oca_index_5year_geom |> 
+nyss_downstate_5year <- filings_20_25_sf |> 
   st_join(nyss_downstate |> 
-              select(DISTRICT),
+              select(DISTRICT, NAME),
             left = FALSE) |> 
   st_drop_geometry() |> 
-  group_by(DISTRICT) |> 
+  group_by(DISTRICT, NAME) |> 
   summarize(`Eviction Filings` = n()) |> 
-  arrange(desc(`Eviction Filings`)) |> 
-  head(10)
+  arrange(desc(`Eviction Filings`)) 
 
-nyss_downstate_5year_table <- nyss_downstate_5year |> 
+nyss_downstate_5year_table <- nyss_downstate_5year |>
+  head(10) |> 
   flextable() |> 
   set_table_properties(width = 1, layout = "autofit") |> 
   align(j=1,
         align = "left",
         part = "all") |> 
   set_header_labels(
-    DISTRICT = "District"
+    DISTRICT = "District",
+    NAME = "Representative"
   )
 
 nyss_downstate_5year_table
@@ -335,24 +383,26 @@ nyss_downstate_5year_table
 ### By NYS Senate District, January 1, 2025 - December 31, 2025
 #### Upstate Senate Districts (Not intersecting with NYC Borough boundaries)
 ```{r, cache=FALSE}
-nyss_upstate_1year <- oca_index_1year_geom |> 
+nyss_upstate_1year <- filings_20_25_sf |> 
+  filter(year(fileddate) == 2025) |> 
   st_join(nyss_upstate |> 
-              select(DISTRICT),
+              select(DISTRICT, NAME),
             left = FALSE) |> 
   st_drop_geometry() |> 
-  group_by(DISTRICT) |> 
+  group_by(DISTRICT, NAME) |> 
   summarize(`Eviction Filings` = n()) |> 
-  arrange(desc(`Eviction Filings`)) |> 
-  head(10)
+  arrange(desc(`Eviction Filings`))
 
 nyss_upstate_1year_table <- nyss_upstate_1year |> 
+  head(10) |> 
   flextable() |> 
   set_table_properties(width = 1, layout = "autofit") |> 
   align(j=1,
         align = "left",
         part = "all") |> 
   set_header_labels(
-    DISTRICT = "District"
+    DISTRICT = "District",
+    NAME = "Representative"
   )
 
 nyss_upstate_1year_table
@@ -360,79 +410,47 @@ nyss_upstate_1year_table
 
 #### Downstate Senate Districts (Intersecting with NYC Borough boundaries)
 ```{r, cache=FALSE}
-nyss_downstate_1year <- oca_index_1year_geom |> 
+nyss_downstate_1year <- filings_20_25_sf |> 
+  filter(year(fileddate) == 2025) |> 
   st_join(nyss_downstate |> 
-              select(DISTRICT),
+              select(DISTRICT, NAME),
             left = FALSE) |> 
   st_drop_geometry() |> 
-  group_by(DISTRICT) |> 
+  group_by(DISTRICT, NAME) |> 
   summarize(`Eviction Filings` = n()) |> 
-  arrange(desc(`Eviction Filings`)) |> 
-  head(10)
+  arrange(desc(`Eviction Filings`))
 
 nyss_downstate_1year_table <- nyss_downstate_1year |> 
+  head(10) |> 
   flextable() |> 
   set_table_properties(width = 1, layout = "autofit") |> 
   align(j=1,
         align = "left",
         part = "all") |> 
   set_header_labels(
-    DISTRICT = "District"
+    DISTRICT = "District",
+    NAME = "Representative"
   )
 
 nyss_downstate_1year_table
 ```
 
 ### Executed Evictions in 2025
-```{sql, connection = con, output.var="executed_evictions_25", cache=FALSE}
-SELECT
-  DISTINCT i.indexnumberid,
-  w.executiondate
-FROM oca_index i
-JOIN oca_warrants w ON i.indexnumberid = w.indexnumberid
-WHERE w.executiondate >= MAKE_DATE(2025,1,1) 
-  AND w.executiondate <= MAKE_DATE(2025,12,31)
-  AND i.classification IN ('Holdover', 'Non-Payment')
-  AND (i.propertytype = 'Residential' OR i.propertytype IS NULL)
-  AND w.executiondate IS NOT NULL
-```
 
-```{r, cache=FALSE}
-executed_evictions_25_geom <- st_read(con, query = "
-WITH executed_evictions_25 AS (
-	SELECT
-	  DISTINCT i.indexnumberid,
-	  w.executiondate
-	FROM oca_index i
-	JOIN oca_warrants w ON i.indexnumberid = w.indexnumberid
-	WHERE w.executiondate >= MAKE_DATE(2025,1,1) 
-	  AND w.executiondate <= MAKE_DATE(2025,12,31)
-	  AND i.classification IN ('Holdover', 'Non-Payment')
-	  AND (i.propertytype = 'Residential' OR i.propertytype IS NULL)
-	  AND w.executiondate IS NOT NULL
-)
-SELECT e.*,
-	ST_TRANSFORM(a.geom, 2263)
-FROM executed_evictions_25 e
-JOIN oca_addresses a on e.indexnumberid = a.indexnumberid
-WHERE a.geom IS NOT NULL;")
-```
-Note: Of the `r scales::comma(nrow(executed_evictions_25))` evictions executed statewide in 2025, only `r scales::comma(nrow(executed_evictions_25_geom))` have a location associated with them (`r round((nrow(executed_evictions_25_geom)/nrow(executed_evictions_25)*100),2)`%)
+Note: Of the `r scales::comma(nrow(executions_20_25 |> filter(year(executiondate)==2025)))` evictions executed statewide in 2025, only `r scales::comma(nrow(executions_20_25_sf |> filter(year(executiondate)==2025)))` have a location associated with them (`r round((nrow(executions_20_25_sf |> filter(year(executiondate)==2025))/nrow(executions_20_25 |> filter(year(executiondate)==2025))*100),2)`%)
 
 ``` {r, cache=FALSE}
-nys_counties <- read_sf("https://services6.arcgis.com/EbVsqZ18sv1kVJ3k/ArcGIS/rest/services/NYS_Civil_Boundaries/FeatureServer/2/query?where=0%3D0&outFields=*&f=geojson") |> 
-  st_transform(2263)
-
-executed_evictions_25_byCty <- executed_evictions_25_geom |> 
+executed_evictions_25_byCty <- executions_20_25_sf |> 
+  filter(year(executiondate) == 2025) |> 
   st_join(nys_counties |> 
             select(NAME)) |> 
   st_drop_geometry() |> 
   group_by(NAME) |> 
   summarize(`Executed Evictions` = n()) |> 
-  arrange(desc(`Executed Evictions`)) |> 
-  head(10)
+  arrange(desc(`Executed Evictions`))
 
 executed_evictions_25_byCty_table <- executed_evictions_25_byCty |> 
+  head(10) |> 
   flextable() |> 
   set_table_properties(width = 1, layout = "autofit") |> 
   align(j=1,
@@ -449,41 +467,20 @@ executed_evictions_25_byCty_table
 ### Evictions During the Winter Months (November 1 - April 15)
 
 #### Eviction filings
-```{sql, connection=con, output.var="winter_filings", cache=FALSE}
-WITH eviction_filings_with_season AS(
-	SELECT
-		DISTINCT indexnumberid,
-		EXTRACT(YEAR FROM fileddate) AS filed_year,
-		CASE 
-	        WHEN EXTRACT(MONTH FROM fileddate) >= 11 THEN TRUE
-	        WHEN EXTRACT(MONTH FROM fileddate) < 4 THEN TRUE
-	        WHEN EXTRACT(MONTH FROM fileddate) = 4 
-	             AND EXTRACT(DAY FROM fileddate) <= 15 THEN TRUE
-	        ELSE FALSE
-	    END AS winter_season
-	FROM oca_index
-	WHERE fileddate >= MAKE_DATE(2020,1,1) 
-	  AND fileddate <= MAKE_DATE(2025,12,31)
-	  AND classification IN ('Holdover', 'Non-Payment')
-	  AND (propertytype = 'Residential' OR propertytype IS NULL)
-)
-SELECT
-	filed_year,
-	COUNT(indexnumberid) AS all_filings,
-	SUM(winter_season::int) AS winter_filings,
-	100* ROUND(SUM(winter_season::int)::numeric/COUNT(indexnumberid),3) AS winter_filing_pct
-FROM eviction_filings_with_season
-GROUP BY filed_year
-ORDER BY filed_year;
-```
 
 ```{r}
-winter_filings_table <- winter_filings |> 
-  # Convert from Postgres int64
-  mutate(
-    all_filings = as.numeric(all_filings),
-    winter_filings = as.numeric(winter_filings)
-  ) |> 
+filings_20_25 <- filings_20_25 |> 
+  mutate(winter_season = case_when(month(fileddate) >= 11 ~ TRUE,
+                                   month(fileddate) < 4 ~ TRUE,
+                                   month(fileddate) == 4 & day(fileddate) <= 15 ~ TRUE,
+                                   .default = FALSE
+                                   ))
+
+winter_filings_table <- filings_20_25 |> 
+  group_by(filed_year = year(fileddate)) |> 
+  summarize(all_filings = n(),
+            winter_filings = sum(winter_season)) |> 
+  mutate(winter_filing_pct = round((winter_filings/all_filings*100), 1)) |> 
   flextable() |> 
   set_table_properties(width = 1, layout = "autofit") |> 
   set_header_labels(
@@ -504,41 +501,20 @@ winter_filings_table
 ```
 
 #### Executed evictions
-```{sql, connection=con, output.var="winter_executions", cache=FALSE}
-WITH eviction_exc_with_season AS(
-	SELECT
-		DISTINCT i.indexnumberid,
-		EXTRACT(YEAR FROM w.executiondate) AS executed_year,
-		CASE 
-	        WHEN EXTRACT(MONTH FROM w.executiondate) >= 11 THEN TRUE
-	        WHEN EXTRACT(MONTH FROM w.executiondate) < 4 THEN TRUE
-	        WHEN EXTRACT(MONTH FROM w.executiondate) = 4 
-	             AND EXTRACT(DAY FROM w.executiondate) <= 15 THEN TRUE
-	        ELSE FALSE
-	    END AS winter_season
-	FROM oca_index i
-	JOIN oca_warrants w on i.indexnumberid=w.indexnumberid
-	WHERE w.executiondate >= MAKE_DATE(2020,1,1) 
-	  AND w.executiondate <= MAKE_DATE(2025,12,31)
-	  AND i.classification IN ('Holdover', 'Non-Payment')
-	  AND (i.propertytype = 'Residential' OR i.propertytype IS NULL)
-)
-SELECT
-	executed_year,
-	COUNT(indexnumberid) AS all_executions,
-	SUM(winter_season::int) AS winter_executions,
-	100* ROUND(SUM(winter_season::int)::numeric/COUNT(indexnumberid),3) AS winter_execution_pct
-FROM eviction_exc_with_season
-GROUP BY executed_year
-ORDER BY executed_year;	
-```
-
 
 ```{r}
-winter_executions_table <- winter_executions |> 
-  mutate(all_executions = as.numeric(all_executions),
-         winter_executions = as.numeric(winter_executions)
-        ) |>
+executions_20_25 <- executions_20_25 |> 
+  mutate(winter_season = case_when(month(executiondate) >= 11 ~ TRUE,
+                                   month(executiondate) < 4 ~ TRUE,
+                                   month(executiondate) == 4 & day(executiondate) <= 15 ~ TRUE,
+                                   .default = FALSE
+                                   ))
+
+winter_executions_table <- executions_20_25 |> 
+  group_by(executed_year = year(executiondate)) |>
+  summarize(all_executions = n(),
+            winter_executions = sum(winter_season)) |> 
+  mutate(winter_execution_pct = round(winter_executions/all_executions*100,1)) |> 
   flextable() |>
   set_table_properties(width = 1, layout = "autofit") |> 
   set_header_labels(
@@ -556,5 +532,222 @@ winter_executions_table <- winter_executions |>
       part = "all")
   
 winter_executions_table 
+```
+
+Compiling filings, executions, winter filings, and winter executions for the two political districts plus NYC Council districts:
+```{r}
+# Compile filings, executions, winter filings, winter executions for all political districts
+filings_20_25_sf <- filings_20_25_sf |> 
+  mutate(winter_season = case_when(month(fileddate) >= 11 ~ TRUE,
+                                   month(fileddate) < 4 ~ TRUE,
+                                   month(fileddate) == 4 & day(fileddate) <= 15 ~ TRUE,
+                                   .default = FALSE
+                                   ))
+
+executions_20_25_sf <- executions_20_25_sf |> 
+  mutate(winter_season = case_when(month(executiondate) >= 11 ~ TRUE,
+                                   month(executiondate) < 4 ~ TRUE,
+                                   month(executiondate) == 4 & day(executiondate) <= 15 ~ TRUE,
+                                   .default = FALSE
+                                   ))
+
+### Assembly Districts ###
+nysad_compiled <- nysad |> 
+  select(District, Name, Party) |> 
+  mutate(Region = case_when(District %in% nysad_upstate$District ~ "Upstate",
+                            District %in% nysad_downstate$District ~ "Downstate",
+                            .default = NA))
+
+executions_20_25_nysad <- executions_20_25_sf |> 
+  st_join(nysad_compiled |> select(District))
+
+
+
+nysad_compiled <- nysad_compiled |> 
+  left_join(
+    bind_rows(
+      nysad_downstate_5year,
+      nysad_upstate_5year
+    ) |> 
+      rename("filings_20_25" = "Eviction Filings") |> 
+      select(!Name),
+    by = join_by(District)
+  ) |> 
+  left_join(
+    bind_rows(
+      nysad_downstate_1year,
+      nysad_upstate_1year
+    ) |> 
+      rename("filings_25" = "Eviction Filings") |> 
+      select(!Name),
+    by = join_by(District)
+  ) |> 
+  left_join(executions_20_25_nysad |> 
+              st_drop_geometry() |> 
+              group_by(District) |> 
+              summarize(executions_20_25 = n())) |> 
+  left_join(executions_20_25_nysad |> 
+              filter(year(executiondate) == 2025) |> 
+              st_drop_geometry() |> 
+              group_by(District) |> 
+              summarize(executions_25 = n())) |> 
+  left_join(filings_20_25_sf |> 
+              filter(winter_season == TRUE) |> 
+              st_join(nysad_compiled |> select(District)) |>
+              st_drop_geometry() |> 
+              group_by(District) |> 
+              summarize(winter_filings_20_25 = n())) |> 
+  left_join(filings_20_25_sf |> 
+              filter(winter_season == TRUE & year(fileddate) == 2025) |> 
+              st_join(nysad_compiled |> select(District)) |>
+              st_drop_geometry() |> 
+              group_by(District) |> 
+              summarize(winter_filings_25 = n())) |> 
+  left_join(executions_20_25_nysad |> 
+              filter(winter_season == TRUE) |> 
+              st_drop_geometry() |> 
+              group_by(District) |> 
+              summarize(winter_executions_20_25 = n())) |> 
+  left_join(executions_20_25_nysad |> 
+              filter(winter_season == TRUE & year(executiondate) == 2025) |> 
+              st_drop_geometry() |> 
+              group_by(District) |> 
+              summarize(winter_executions_25 = n())) |> 
+  st_drop_geometry()
+
+# Rearrange
+nysad_compiled <- nysad_compiled |> 
+  relocate(contains("20_25"),
+           .after = Region)
+
+### Senate Districts ###
+nyss_compiled <- nyss |> 
+  select(DISTRICT, NAME, Party) |> 
+  mutate(Region = case_when(DISTRICT %in% nyss_upstate$DISTRICT ~ "Upstate",
+                            DISTRICT %in% nyss_downstate$DISTRICT ~ "Downstate",
+                            .default = NA))
+
+executions_20_25_nyss <- executions_20_25_sf |> 
+  st_join(nyss_compiled |> select(DISTRICT))
+
+nyss_compiled <- nyss_compiled |> 
+  left_join(
+    bind_rows(
+      nyss_upstate_5year,
+      nyss_downstate_5year
+    ) |> 
+      rename("filings_20_25" = "Eviction Filings") |> 
+      select(!NAME),
+    by = join_by(DISTRICT)
+  ) |> 
+  left_join(
+    bind_rows(
+      nyss_downstate_1year,
+      nyss_upstate_1year
+    ) |> 
+      rename("filings_25" = "Eviction Filings") |> 
+      select(!NAME),
+    by = join_by(DISTRICT)
+  ) |> 
+  left_join(executions_20_25_nyss |> 
+              st_drop_geometry() |> 
+              group_by(DISTRICT) |> 
+              summarize(executions_20_25 = n())) |> 
+  left_join(executions_20_25_nyss |> 
+              filter(year(executiondate) == 2025) |> 
+              st_drop_geometry() |> 
+              group_by(DISTRICT) |> 
+              summarize(executions_25 = n())) |> 
+  left_join(filings_20_25_sf |> 
+              filter(winter_season == TRUE) |> 
+              st_join(nyss_compiled |> select(DISTRICT)) |>
+              st_drop_geometry() |> 
+              group_by(DISTRICT) |> 
+              summarize(winter_filings_20_25 = n())) |> 
+  left_join(filings_20_25_sf |> 
+              filter(winter_season == TRUE & year(fileddate) == 2025) |> 
+              st_join(nyss_compiled |> select(DISTRICT)) |>
+              st_drop_geometry() |> 
+              group_by(DISTRICT) |> 
+              summarize(winter_filings_25 = n())) |> 
+  left_join(executions_20_25_nyss |> 
+              filter(winter_season == TRUE) |> 
+              st_drop_geometry() |> 
+              group_by(DISTRICT) |> 
+              summarize(winter_executions_20_25 = n())) |> 
+  left_join(executions_20_25_nyss |> 
+              filter(winter_season == TRUE & year(executiondate) == 2025) |> 
+              st_drop_geometry() |> 
+              group_by(DISTRICT) |> 
+              summarize(winter_executions_25 = n())) |> 
+  st_drop_geometry()
+  
+# Rearrange
+nyss_compiled <- nyss_compiled |> 
+  relocate(contains("20_25"),
+           .after = Region)
+
+
+### NYC Council ###
+nyc_council <- nyc_council |> 
+  select(CounDist, name) |> 
+  arrange(CounDist)
+
+filings_20_25_nycc <- filings_20_25_sf |> 
+  st_join(nyc_council |> select(CounDist)) |> 
+  st_drop_geometry()
+
+executions_20_25_nycc <- executions_20_25_sf |> 
+  st_join(nyc_council |> select(CounDist)) |> 
+  st_drop_geometry()
+
+nyc_council_compiled <- nyc_council |> 
+  # Filings 20-25
+  left_join(filings_20_25_nycc |> 
+              filter(!is.na(CounDist)) |> 
+              group_by(CounDist) |> 
+              summarize(filings_20_25 = n())) |> 
+  # Executions 20-25
+  left_join(executions_20_25_nycc |> 
+              filter(!is.na(CounDist)) |> 
+              group_by(CounDist) |> 
+              summarize(executions_20_25 = n())) |> 
+  # Winter filings 20-25
+  left_join(filings_20_25_nycc |> 
+              filter(!is.na(CounDist) & winter_season == TRUE) |> 
+              group_by(CounDist) |> 
+              summarize(winter_filings_20_25 = n())) |> 
+  # Winter Executions 20-25
+  left_join(executions_20_25_nycc |> 
+              filter(!is.na(CounDist) & winter_season == TRUE) |> 
+              group_by(CounDist) |> 
+              summarize(winter_executions_20_25 = n())) |> 
+  # Filings 25
+  left_join(filings_20_25_nycc |> 
+              filter(!is.na(CounDist) & year(fileddate) == 2025) |> 
+              group_by(CounDist) |> 
+              summarize(filings_25 = n())) |>
+  # Executions 25
+  left_join(executions_20_25_nycc |> 
+              filter(!is.na(CounDist) & year(executiondate) == 2025) |> 
+              group_by(CounDist) |> 
+              summarize(executions_25 = n())) |> 
+  # Winter filings 25
+  left_join(filings_20_25_nycc |> 
+              filter(!is.na(CounDist) & winter_season == TRUE & year(fileddate) == 2025) |> 
+              group_by(CounDist) |> 
+              summarize(winter_filings_25 = n())) |>
+  #Winter Executions 25
+  left_join(executions_20_25_nycc |> 
+              filter(!is.na(CounDist) & winter_season == TRUE & year(executiondate) == 2025) |> 
+              group_by(CounDist) |> 
+              summarize(winter_executions_25 = n())) |> 
+  st_drop_geometry()
+
+write_xlsx(list("NYS Assembly" = nysad_compiled,
+                "NYS Senate" = nyss_compiled,
+                "NYC Council" = nyc_council_compiled),
+          path = "NYS_Evictions_2020_2025.xlsx")
+
 ```
 
