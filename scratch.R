@@ -141,3 +141,12 @@ filings_20_25 |>
   arrange(desc(count))
 
 nrow(filings_20_25_sf)
+
+
+bind_rows(
+  nyss_upstate_5year,
+  nyss_downstate_5year
+) |> 
+  rename("filings_20_25" = "Eviction Filings") |> 
+  select(!Name)
+  
