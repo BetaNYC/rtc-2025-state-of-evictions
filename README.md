@@ -5,7 +5,7 @@ Analysis of New York State eviction filings and executed evictions, 2020–2025,
 ## Running
 
 1. Create a `.Renviron` with the OCA L2 database credentials: `PG_DBNAME`, `PG_HOST`, `PG_PORT`, `PG_USER`, `PG_PASSWORD`.
-2. Render with `quarto render`. Missing R packages are installed on first run.
+2. Render with `quarto render index.qmd`. Missing R packages are installed on first run.
 
 ## Outputs
 
