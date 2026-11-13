@@ -31,11 +31,11 @@ To report a bug in this report, or to ask for a new feature, [open an issue on G
 - **What changed:** The Assembly and Senate districts listed as outside New York City used to be picked by district number. They are now the districts that do not touch the city's borough boundaries, which moved some districts from one list to the other. The counts were also run again, and the statewide total of filings went from 849,090 to 849,449.
 - **More detail:** [Pull request 3](https://github.com/BetaNYC/rtc-2025-state-of-evictions/pull/3) · [Pull request 4](https://github.com/BetaNYC/rtc-2025-state-of-evictions/pull/4) · [Pull request 5](https://github.com/BetaNYC/rtc-2025-state-of-evictions/pull/5)
 
-## 2026-01-26: New York City counts included commercial evictions
+## 2026-01-26: New York City counts now leave out commercial evictions
 
-- **Tags:** Data, Correction
+- **Tags:** Data
 - **What changed:** From January 23 to January 26, 2026, the counts for New York City included commercial eviction cases as well as residential ones. They now leave commercial cases out. The statewide total of filings from 2020 to 2025 went from 884,193 to 849,090.
-- **If you used the old numbers:** Any count you copied from the report between January 23 and January 26, 2026 that includes New York City, including the statewide totals, counts commercial cases too and is too high. Use the counts in the report now. Outside New York City the data does not make it possible to separate commercial cases, so those counts still include them, as the report notes.
+- **If you used the old numbers:** Any count you copied from the report between January 23 and January 26, 2026 that includes New York City, including the statewide totals, includes commercial cases. Use the counts in the report now. Outside New York City the data does not make it possible to separate commercial cases, so those counts still include them, as the report notes.
 - **More detail:** [Issue 1](https://github.com/BetaNYC/rtc-2025-state-of-evictions/issues/1) · [Pull request 2](https://github.com/BetaNYC/rtc-2025-state-of-evictions/pull/2)
 
 ## 2026-01-23: The analysis is published
